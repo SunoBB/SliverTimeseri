@@ -1,0 +1,13 @@
+ALPHAVANTAGE_API_KEY=
+ALPHAVANTAGE_BASE_URL=https://www.alphavantage.co/query
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=gold_timeseri
+POSTGRES_USER=gold_user
+POSTGRES_PASSWORD=gold_password
+POSTGRES_TABLE=gold_market_data
+RAW_CACHE_DIR=/home/suno/Github/Gold_TimeSeri/data/raw/alpha_vantage
+RAW_CACHE_TTL_HOURS=24
+SCHEDULER_ENABLED=true
+SCHEDULER_TIMEZONE=Asia/Ho_Chi_Minh
+SCHEDULER_MORNING_CHECK_HOUR=7

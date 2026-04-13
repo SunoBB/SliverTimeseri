@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: silver-timeseri-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: silver_timeseri
+      POSTGRES_USER: silver_user
+      POSTGRES_PASSWORD: silver_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+volumes:
+  postgres_data:
