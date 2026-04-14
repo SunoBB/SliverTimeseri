@@ -10,6 +10,8 @@ from silver_timeseri.services.pipeline import CURATED_LAYER, RAW_LAYER
 from silver_timeseri.services.app_service import build_pipeline, sync_incremental, sync_market_data
 from tqdm import tqdm
 
+_DEFAULT_ARIMA_ORDER = (1, 1, 1)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -82,6 +84,20 @@ def build_parser() -> argparse.ArgumentParser:
     model_parser.add_argument("--ar-order", type=int, default=5)
     model_parser.add_argument("--ma-order", type=int, default=3)
     model_parser.add_argument("--test-size", type=int, default=20)
+
+    academic_parser = subparsers.add_parser(
+        "academic",
+        parents=[common],
+        help="Chạy toàn bộ luồng phân tích học thuật: resample monthly → ADF → decompose → 6 mô hình → so sánh → forecast.",
+    )
+    academic_parser.add_argument("--output-dir", type=Path, default=Path("outputs/charts"))
+    academic_parser.add_argument("--test-size", type=int, default=12,
+                                  help="Số tháng cuối dùng làm tập test (mặc định: 12).")
+    academic_parser.add_argument("--arima-p", type=int, default=1)
+    academic_parser.add_argument("--arima-d", type=int, default=1)
+    academic_parser.add_argument("--arima-q", type=int, default=1)
+    academic_parser.add_argument("--n-months-forecast", type=int, default=12,
+                                  help="Số tháng dự báo tương lai (mặc định: 12).")
 
     return parser
 
@@ -237,6 +253,9 @@ def command_charts(
             series_layer=series_layer,
         )
 
+    date_subdir = f"{frame.index.min():%Y-%m}_{frame.index.max():%Y-%m}"
+    output_dir = output_dir / date_subdir
+
     saved_paths = save_time_series_charts(
         frame,
         value_column=value_column,
@@ -247,6 +266,108 @@ def command_charts(
         lag=lag,
     )
     print(json.dumps({"saved_files": [str(path) for path in saved_paths]}, indent=2))
+    return 0
+
+
+def command_academic(
+    start_date: str | None,
+    end_date: str | None,
+    timeframe: str,
+    series_layer: str,
+    force_refresh: bool,
+    output_dir: Path,
+    test_size: int,
+    arima_order: tuple[int, int, int],
+    n_months_forecast: int,
+) -> int:
+    """Thực thi toàn bộ luồng phân tích học thuật theo roadmap CLAUDE.md."""
+    from silver_timeseri.analysis.features import build_decomposition_report, build_monthly_series
+    from silver_timeseri.analysis.metrics import build_comparison_table, build_stationarity_report
+    from silver_timeseri.analysis.models import forecast_future_months, run_academic_suite
+    from silver_timeseri.analysis.visualization import (
+        save_acf_pacf_chart,
+        save_decomposition_charts,
+        save_forecast_comparison_chart,
+        save_future_forecast_chart,
+        save_stationarity_chart,
+    )
+
+    pipeline = build_pipeline()
+    frame = pipeline.load(
+        start_date=start_date,
+        end_date=end_date,
+        timeframe=timeframe,
+        force_refresh=force_refresh,
+        series_layer=series_layer,
+    )
+    if frame.empty:
+        raise ValueError("Không có dữ liệu. Chạy 'sync-db' trước hoặc kiểm tra kết nối.")
+
+    # BƯỚC 1 — Resample daily → monthly
+    monthly = build_monthly_series(frame)
+    n_monthly = len(monthly)
+
+    date_subdir = f"{monthly.index.min():%Y-%m}_{monthly.index.max():%Y-%m}"
+    output_dir = output_dir / date_subdir
+
+    # BƯỚC 2 — EDA (charts đã có từ lệnh 'charts'; ở đây tạo ACF/PACF)
+    print(f"[1/5] Resample xong: {n_monthly} tháng quan sát.", flush=True)
+    acf_path = save_acf_pacf_chart(monthly["price_usd"], output_dir)
+    print(f"      → {acf_path}", flush=True)
+
+    # BƯỚC 3 — Kiểm định tính ổn định (ADF) trên chuỗi monthly
+    stationarity = build_stationarity_report(monthly)
+    stationarity_path = save_stationarity_chart(monthly["price_usd"], stationarity, output_dir)
+    print(
+        f"[2/5] ADF: {stationarity['conclusion']['summary']} "
+        f"(d đề xuất = {stationarity['conclusion']['d_recommended']})",
+        flush=True,
+    )
+    print(f"      → {stationarity_path}", flush=True)
+
+    # BƯỚC 4 — Phân rã chuỗi
+    decomp_report = build_decomposition_report(monthly)
+    decomp_paths = save_decomposition_charts(monthly["price_usd"], output_dir)
+    recommended_decomp = decomp_report.get("recommended_model", "?")
+    print(f"[3/5] Phân rã: mô hình được chọn = {recommended_decomp}", flush=True)
+    for p in decomp_paths:
+        print(f"      → {p}", flush=True)
+
+    # BƯỚC 5 — Huấn luyện 6 mô hình
+    print(f"[4/5] Huấn luyện 6 mô hình (test_size={test_size} tháng)…", flush=True)
+    results = run_academic_suite(monthly, test_size=test_size, arima_order=arima_order)
+    results_dicts = [r.to_dict() for r in results]
+    comparison = build_comparison_table(results_dicts)
+    best_model = comparison[0]["model"] if comparison else "ARIMA(1, 1, 1)"
+
+    comparison_path = save_forecast_comparison_chart(monthly["price_usd"], results_dicts, output_dir)
+    print(f"      → {comparison_path}", flush=True)
+
+    # BƯỚC 6 — Dự báo tương lai bằng mô hình tốt nhất
+    future = forecast_future_months(monthly, best_model, n_months=n_months_forecast, arima_order=arima_order)
+    future_path = save_future_forecast_chart(monthly["price_usd"], future, output_dir)
+    print(
+        f"[5/5] Dự báo {n_months_forecast} tháng tới bằng {best_model} → {future_path}",
+        flush=True,
+    )
+
+    report = {
+        "n_monthly_obs": n_monthly,
+        "test_size": test_size,
+        "stationarity": stationarity,
+        "decomposition": decomp_report,
+        "comparison_table": comparison,
+        "best_model": best_model,
+        "future_forecast": future,
+        "charts_saved": [
+            str(acf_path),
+            str(stationarity_path),
+            *[str(p) for p in decomp_paths],
+            str(comparison_path),
+            str(future_path),
+        ],
+    }
+    print(json.dumps(report, indent=2))
     return 0
 
 
@@ -337,6 +458,18 @@ def main() -> int:
                 ma_order=args.ma_order,
                 test_size=args.test_size,
                 force_refresh=args.force_refresh,
+            )
+        if args.command == "academic":
+            return command_academic(
+                start_date=args.start_date,
+                end_date=args.end_date,
+                timeframe=args.timeframe,
+                series_layer=args.series_layer,
+                force_refresh=args.force_refresh,
+                output_dir=args.output_dir,
+                test_size=args.test_size,
+                arima_order=(args.arima_p, args.arima_d, args.arima_q),
+                n_months_forecast=args.n_months_forecast,
             )
     except ValueError as exc:
         parser.exit(status=1, message=f"Error: {exc}\n")

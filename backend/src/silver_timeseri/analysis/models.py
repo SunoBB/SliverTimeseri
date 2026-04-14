@@ -398,3 +398,274 @@ def _round_mapping(values: dict[str, Any]) -> dict[str, Any]:
         else:
             rounded[key] = value
     return rounded
+
+
+# ── Academic models (monthly series, period=12) ──────────────────────────────
+
+def _split_monthly(monthly: pd.DataFrame, test_size: int) -> tuple[pd.Series, pd.Series]:
+    series = monthly["price_usd"].dropna()
+    if len(series) <= test_size:
+        raise ValueError("Không đủ dữ liệu monthly cho test_size yêu cầu.")
+    return series.iloc[:-test_size], series.iloc[-test_size:]
+
+
+def train_ses_model(monthly: pd.DataFrame, test_size: int) -> ModelRunResult:
+    """Simple Exponential Smoothing — không có trend, không có seasonal."""
+    from statsmodels.tsa.holtwinters import SimpleExpSmoothing
+
+    train, test = _split_monthly(monthly, test_size)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fitted = SimpleExpSmoothing(train, initialization_method="estimated").fit(optimized=True)
+    preds = fitted.forecast(len(test))
+    preds.index = test.index
+    next_date = (test.index.max() + pd.DateOffset(months=1)).date().isoformat()
+
+    return ModelRunResult(
+        model_name="SES",
+        train_size=len(train),
+        test_size=len(test),
+        metrics=evaluate_predictions(test, preds),
+        parameters={
+            "smoothing_level": round(float(fitted.params["smoothing_level"]), 6),
+            "aic": round(float(fitted.aic), 6),
+        },
+        predictions=_format_predictions(test, preds),
+        next_forecast={
+            "date": next_date,
+            "predicted": round(float(fitted.forecast(1).iloc[0]), 6),
+        },
+    )
+
+
+def train_holt_model(monthly: pd.DataFrame, test_size: int, damped: bool = False) -> ModelRunResult:
+    """Holt's Linear (hoặc Damped) Trend — có trend tuyến tính."""
+    from statsmodels.tsa.holtwinters import Holt
+
+    train, test = _split_monthly(monthly, test_size)
+    model_name = "Holt Damped" if damped else "Holt Linear"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fitted = Holt(train, damped_trend=damped, initialization_method="estimated").fit(optimized=True)
+    preds = fitted.forecast(len(test))
+    preds.index = test.index
+    next_date = (test.index.max() + pd.DateOffset(months=1)).date().isoformat()
+
+    return ModelRunResult(
+        model_name=model_name,
+        train_size=len(train),
+        test_size=len(test),
+        metrics=evaluate_predictions(test, preds),
+        parameters={
+            "smoothing_level": round(float(fitted.params["smoothing_level"]), 6),
+            "smoothing_trend": round(float(fitted.params["smoothing_trend"]), 6),
+            "damped": damped,
+            "aic": round(float(fitted.aic), 6),
+        },
+        predictions=_format_predictions(test, preds),
+        next_forecast={
+            "date": next_date,
+            "predicted": round(float(fitted.forecast(1).iloc[0]), 6),
+        },
+    )
+
+
+def train_hw_model(monthly: pd.DataFrame, test_size: int, seasonal: str = "add") -> ModelRunResult:
+    """Holt-Winters — có trend và seasonal (cộng hoặc nhân), period=12."""
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+    train, test = _split_monthly(monthly, test_size)
+    if len(train) < 24:
+        raise ValueError("Holt-Winters cần ít nhất 24 quan sát monthly để khởi tạo seasonal.")
+    model_name = "HW Additive" if seasonal == "add" else "HW Multiplicative"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fitted = ExponentialSmoothing(
+            train,
+            trend="add",
+            seasonal=seasonal,
+            seasonal_periods=12,
+            initialization_method="estimated",
+        ).fit(optimized=True)
+    preds = fitted.forecast(len(test))
+    preds.index = test.index
+    next_date = (test.index.max() + pd.DateOffset(months=1)).date().isoformat()
+
+    return ModelRunResult(
+        model_name=model_name,
+        train_size=len(train),
+        test_size=len(test),
+        metrics=evaluate_predictions(test, preds),
+        parameters={
+            "smoothing_level": round(float(fitted.params["smoothing_level"]), 6),
+            "smoothing_trend": round(float(fitted.params["smoothing_trend"]), 6),
+            "smoothing_seasonal": round(float(fitted.params["smoothing_seasonal"]), 6),
+            "seasonal_type": seasonal,
+            "aic": round(float(fitted.aic), 6),
+        },
+        predictions=_format_predictions(test, preds),
+        next_forecast={
+            "date": next_date,
+            "predicted": round(float(fitted.forecast(1).iloc[0]), 6),
+        },
+    )
+
+
+def train_arima_monthly_model(
+    monthly: pd.DataFrame,
+    order: tuple[int, int, int] = (1, 1, 1),
+    test_size: int = 12,
+) -> ModelRunResult:
+    """ARIMA(p,d,q) trên chuỗi monthly — d xác định từ ADF test."""
+    train, test = _split_monthly(monthly, test_size)
+    train_reset = train.reset_index(drop=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        fitted = ARIMA(train_reset, order=order).fit()
+    forecast_result = fitted.get_forecast(steps=len(test))
+    preds = pd.Series(forecast_result.predicted_mean.values, index=test.index)
+    conf_int = forecast_result.conf_int(alpha=0.05)
+    next_date = (test.index.max() + pd.DateOffset(months=1)).date().isoformat()
+
+    next_fc = fitted.get_forecast(steps=len(test) + 1)
+    next_pred = float(next_fc.predicted_mean.iloc[-1])
+    next_ci = next_fc.conf_int(alpha=0.05)
+
+    return ModelRunResult(
+        model_name=f"ARIMA{order}",
+        train_size=len(train),
+        test_size=len(test),
+        metrics=evaluate_predictions(test, preds),
+        parameters={
+            "order": list(order),
+            "aic": round(float(fitted.aic), 6),
+            "bic": round(float(fitted.bic), 6),
+        },
+        predictions=[
+            {
+                "date": idx.date().isoformat(),
+                "actual": round(float(act), 6),
+                "predicted": round(float(pred), 6),
+                "lower_95": round(float(conf_int.iloc[i, 0]), 6),
+                "upper_95": round(float(conf_int.iloc[i, 1]), 6),
+                "error": round(float(act - pred), 6),
+            }
+            for i, (idx, act, pred) in enumerate(
+                zip(test.index, test.values, preds.values)
+            )
+        ],
+        next_forecast={
+            "date": next_date,
+            "predicted": round(next_pred, 6),
+            "lower_95": round(float(next_ci.iloc[-1, 0]), 6),
+            "upper_95": round(float(next_ci.iloc[-1, 1]), 6),
+        },
+    )
+
+
+def run_academic_suite(
+    monthly: pd.DataFrame,
+    test_size: int = 12,
+    arima_order: tuple[int, int, int] = (1, 1, 1),
+) -> list[ModelRunResult]:
+    """Chạy đủ 6 mô hình academic trên chuỗi monthly theo slide giảng viên."""
+    trainers = [
+        ("SES", lambda: train_ses_model(monthly, test_size)),
+        ("Holt Linear", lambda: train_holt_model(monthly, test_size, damped=False)),
+        ("Holt Damped", lambda: train_holt_model(monthly, test_size, damped=True)),
+        ("HW Additive", lambda: train_hw_model(monthly, test_size, seasonal="add")),
+        ("HW Multiplicative", lambda: train_hw_model(monthly, test_size, seasonal="mul")),
+        (f"ARIMA{arima_order}", lambda: train_arima_monthly_model(monthly, order=arima_order, test_size=test_size)),
+    ]
+    results = []
+    for name, trainer in trainers:
+        try:
+            results.append(trainer())
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                ModelRunResult(
+                    model_name=name,
+                    train_size=0,
+                    test_size=0,
+                    metrics={"mae": None, "rmse": None, "mape": None},
+                    parameters={"error": str(exc)},
+                    predictions=[],
+                )
+            )
+    return results
+
+
+def forecast_future_months(
+    monthly: pd.DataFrame,
+    model_name: str,
+    n_months: int = 12,
+    arima_order: tuple[int, int, int] = (1, 1, 1),
+) -> dict[str, Any]:
+    """Retrain best model trên toàn bộ data, dự báo n_months tháng tiếp theo."""
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing, Holt, SimpleExpSmoothing
+
+    series = monthly["price_usd"].dropna()
+    last_date = series.index.max()
+    future_dates = [
+        (last_date + pd.DateOffset(months=i + 1)).date().isoformat()
+        for i in range(n_months)
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        if model_name == "SES":
+            fitted = SimpleExpSmoothing(series, initialization_method="estimated").fit(optimized=True)
+            preds = fitted.forecast(n_months).values
+
+        elif model_name == "Holt Linear":
+            fitted = Holt(series, damped_trend=False, initialization_method="estimated").fit(optimized=True)
+            preds = fitted.forecast(n_months).values
+
+        elif model_name == "Holt Damped":
+            fitted = Holt(series, damped_trend=True, initialization_method="estimated").fit(optimized=True)
+            preds = fitted.forecast(n_months).values
+
+        elif model_name == "HW Additive":
+            fitted = ExponentialSmoothing(
+                series, trend="add", seasonal="add", seasonal_periods=12,
+                initialization_method="estimated",
+            ).fit(optimized=True)
+            preds = fitted.forecast(n_months).values
+
+        elif model_name == "HW Multiplicative":
+            fitted = ExponentialSmoothing(
+                series, trend="add", seasonal="mul", seasonal_periods=12,
+                initialization_method="estimated",
+            ).fit(optimized=True)
+            preds = fitted.forecast(n_months).values
+
+        else:
+            # Default: ARIMA
+            series_reset = series.reset_index(drop=True)
+            fitted_arima = ARIMA(series_reset, order=arima_order).fit()
+            fc = fitted_arima.get_forecast(steps=n_months)
+            ci = fc.conf_int(alpha=0.05)
+            return {
+                "model": model_name,
+                "n_months": n_months,
+                "forecast": [
+                    {
+                        "date": future_dates[i],
+                        "predicted": round(float(fc.predicted_mean.iloc[i]), 6),
+                        "lower_95": round(float(ci.iloc[i, 0]), 6),
+                        "upper_95": round(float(ci.iloc[i, 1]), 6),
+                    }
+                    for i in range(n_months)
+                ],
+            }
+
+    return {
+        "model": model_name,
+        "n_months": n_months,
+        "forecast": [
+            {"date": future_dates[i], "predicted": round(float(preds[i]), 6)}
+            for i in range(n_months)
+        ],
+    }

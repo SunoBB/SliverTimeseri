@@ -8,7 +8,12 @@
       "Bash(npm install:*)",
       "Bash(python3 -)",
       "Bash(node --input-type=module)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -c \"import pandas, numpy, matplotlib, statsmodels; print\\('all OK'\\)\")",
+      "Bash(python3 -c \"import jupyter; print\\('jupyter OK'\\)\")",
+      "Bash(PYTHONPATH=backend/src python3 -m silver_timeseri.cli academic --start-date 2011-01-01 --end-date 2026-04-05 --output-dir outputs/charts --test-size 12 --n-months-forecast 12)",
+      "Bash(bash /home/suno/Github/Gold_TimeSeri/script.sh help)"
     ]
   }
 }

@@ -121,3 +121,29 @@ def build_stationarity_report(
             "summary": conclusion,
         },
     }
+
+
+def build_comparison_table(results_dicts: list[dict]) -> list[dict]:
+    """Tạo bảng so sánh MAE/RMSE/MAPE từ kết quả run_academic_suite().
+
+    Args:
+        results_dicts: Danh sách dict từ ModelRunResult.to_dict() của từng mô hình.
+
+    Returns:
+        Danh sách dict đã sắp xếp theo MAPE tăng dần (mô hình tốt nhất đứng đầu).
+    """
+    table = []
+    for r in results_dicts:
+        metrics = r.get("metrics", {})
+        table.append(
+            {
+                "model": r.get("model_name", "?"),
+                "train_size": r.get("train_size", 0),
+                "test_size": r.get("test_size", 0),
+                "mae": metrics.get("mae"),
+                "rmse": metrics.get("rmse"),
+                "mape": metrics.get("mape"),
+            }
+        )
+    table.sort(key=lambda x: x["mape"] if x["mape"] is not None else float("inf"))
+    return table
