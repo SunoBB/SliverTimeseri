@@ -31,20 +31,22 @@ Usage:
   ./script.sh sync [start_date] [end_date]
   ./script.sh test
 
-Examples:
-  ./script.sh install
-  ./script.sh db-up
-  ./script.sh api
+Examples (A→Z):
+  ./script.sh install                                        # Cài dependencies
+  ./script.sh db-up                                          # Khởi động PostgreSQL
+  ./script.sh sync 2011-01-01 2026-04-12                    # Nạp dữ liệu vào DB
+  ./script.sh academic 2011-01-01 2026-04-12                # Phân tích học thuật đầy đủ
+  ./script.sh api                                            # Chạy FastAPI
   ./script.sh summary curated 2020-01-01 2026-04-05
   ./script.sh export-csv curated data/silver_curated.csv 2020-01-01 2026-04-05
   ./script.sh export-xlsx raw data/silver_raw.xlsx 2020-01-01 2026-04-05
-  ./script.sh sync 2020-01-01 2026-04-05
   ./script.sh test
 
 Notes:
   - Default series layer is: curated
-  - Default date range is: 2011-01-01 to 2026-04-11
+  - Default date range is: 2011-01-01 to 2026-04-12
   - Export .xlsx requires openpyxl in .venv
+  - academic: chạy toàn bộ luồng phân tích học thuật (resample → ADF → decompose → 6 models → forecast)
 EOF
 }
 
@@ -106,6 +108,18 @@ case "$command" in
     start_date="$(default_start "${1:-}")"
     end_date="$(default_end "${2:-}")"
     run_cli sync-db --start-date "$start_date" --end-date "$end_date" --timeframe 1d
+    ;;
+  academic)
+    start_date="$(default_start "${1:-}")"
+    end_date="$(default_end "${2:-}")"
+    run_cli academic \
+      --series-layer curated \
+      --start-date "$start_date" \
+      --end-date "$end_date" \
+      --timeframe 1d \
+      --output-dir "$ROOT_DIR/outputs/charts" \
+      --test-size 12 \
+      --n-months-forecast 12
     ;;
   test)
     PYTHONPATH="$ROOT_DIR/backend/src" "$PYTHON_BIN" -m unittest discover -s "$ROOT_DIR/backend/tests"
