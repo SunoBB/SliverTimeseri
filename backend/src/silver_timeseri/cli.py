@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
+
 def command_summarize(
     start_date: str | None,
     end_date: str | None,
