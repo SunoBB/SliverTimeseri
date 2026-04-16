@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     charts_parser.add_argument("--date-column", type=str, default="date")
     charts_parser.add_argument("--value-column", type=str, default="price_usd")
     charts_parser.add_argument("--ma-window", type=int, default=7)
+    charts_parser.add_argument("--volatility-window", type=int, default=30)
     charts_parser.add_argument("--aggregation-rule", type=str, default="W")
     charts_parser.add_argument("--bins", type=int, default=10)
     charts_parser.add_argument("--lag", type=int, default=1)
@@ -227,6 +228,7 @@ def command_charts(
     date_column: str,
     value_column: str,
     ma_window: int,
+    volatility_window: int,
     aggregation_rule: str,
     bins: int,
     lag: int,
@@ -262,6 +264,7 @@ def command_charts(
         value_column=value_column,
         output_dir=output_dir,
         moving_average_window=ma_window,
+        volatility_window=volatility_window,
         aggregation_rule=aggregation_rule,
         histogram_bins=bins,
         lag=lag,
@@ -444,6 +447,7 @@ def main() -> int:
                 date_column=args.date_column,
                 value_column=args.value_column,
                 ma_window=args.ma_window,
+                volatility_window=args.volatility_window,
                 aggregation_rule=args.aggregation_rule,
                 bins=args.bins,
                 lag=args.lag,

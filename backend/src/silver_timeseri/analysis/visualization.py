@@ -5,6 +5,7 @@ from pathlib import Path
 import matplotlib
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from pandas.plotting import autocorrelation_plot, lag_plot
 
@@ -25,6 +26,9 @@ CHART_TITLES = {
     "autocorrelation": "Tự tương quan: Mức phụ thuộc vào quá khứ",
     "lag": "Biểu đồ trễ: Quan hệ giữa hiện tại và quá khứ",
     "combo": "Tổng hợp nhanh: Xu hướng và phân phối dữ liệu",
+    "log_return": "Log return: Tốc độ thay đổi giá theo thời gian",
+    "volatility": "Rolling volatility: Mức độ rủi ro theo thời gian",
+    "return_volatility_combo": "Kết hợp log return và volatility",
 }
 
 
@@ -130,18 +134,31 @@ def _plot_timeline(
     _style_time_axis(ax)
 
 
+def _build_return_metrics(series: pd.Series, *, volatility_window: int) -> tuple[pd.Series, pd.Series]:
+    positive_series = series.dropna().astype(float)
+    if (positive_series <= 0).any():
+        raise ValueError("Log return requires all values in the selected series to be > 0.")
+
+    log_return = np.log(positive_series / positive_series.shift(1))
+    volatility = log_return.rolling(window=volatility_window).std()
+    return log_return, volatility
+
+
 def save_time_series_charts(
     frame: pd.DataFrame,
     *,
     value_column: str,
     output_dir: Path,
     moving_average_window: int = 7,
+    volatility_window: int = 30,
     aggregation_rule: str = "W",
     histogram_bins: int = 10,
     lag: int = 1,
 ) -> list[Path]:
     if moving_average_window < 2:
         raise ValueError("moving_average_window must be >= 2.")
+    if volatility_window < 2:
+        raise ValueError("volatility_window must be >= 2.")
     if histogram_bins < 1:
         raise ValueError("histogram_bins must be >= 1.")
     if lag < 1:
@@ -151,6 +168,7 @@ def save_time_series_charts(
     series = dataset[value_column]
     moving_average = series.rolling(window=moving_average_window).mean()
     aggregated = series.resample(aggregation_rule).mean()
+    log_return, volatility = _build_return_metrics(series, volatility_window=volatility_window)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     saved_paths: list[Path] = []
@@ -270,6 +288,69 @@ def save_time_series_charts(
     plt.grid(alpha=0.2)
 
     save_current_figure("09_analysis_summary_combo_chart.png")
+
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    ax.plot(log_return.index, log_return.values, color=PRIMARY_COLOR, linewidth=1.4, alpha=0.9)
+    ax.axhline(0, color="#64748b", linewidth=1, linestyle="--", alpha=0.8)
+    ax.fill_between(log_return.index, log_return.values, 0, color=FILL_COLOR, alpha=0.18)
+    ax.set_title(CHART_TITLES["log_return"])
+    ax.set_xlabel("Thời gian")
+    ax.set_ylabel("Log return")
+    _style_time_axis(ax)
+    fig.suptitle(
+        f"Biến động tương đối ngày-liền-kề | Số quan sát hợp lệ: {log_return.dropna().shape[0]}",
+        y=0.98,
+        fontsize=10,
+        color="#475569",
+    )
+    save_current_figure("10_return_log_return_chart.png")
+
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    ax.plot(volatility.index, volatility.values, color=ACCENT_COLOR, linewidth=1.8, alpha=0.95)
+    ax.fill_between(volatility.index, volatility.values, 0, color="#fed7aa", alpha=0.2)
+    ax.set_title(f"{CHART_TITLES['volatility']} (cửa sổ={volatility_window})")
+    ax.set_xlabel("Thời gian")
+    ax.set_ylabel("Độ lệch chuẩn của log return")
+    _style_time_axis(ax)
+    fig.suptitle(
+        "Volatility cao hơn thường đi kèm rủi ro và độ bất định lớn hơn",
+        y=0.98,
+        fontsize=10,
+        color="#475569",
+    )
+    save_current_figure("11_return_rolling_volatility_chart.png")
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(
+        log_return.index,
+        log_return.values,
+        color=PRIMARY_COLOR,
+        linewidth=1.6,
+        alpha=0.9,
+        label="Log return",
+    )
+    ax.plot(
+        volatility.index,
+        volatility.values,
+        color="#dc2626",
+        linewidth=2.0,
+        alpha=0.95,
+        label=f"Rolling volatility ({volatility_window})",
+    )
+    ax.axhline(0, color="#64748b", linewidth=1, linestyle="--", alpha=0.7)
+    ax.set_title(CHART_TITLES["return_volatility_combo"])
+    ax.set_xlabel("Thời gian")
+    ax.set_ylabel("Giá trị")
+    ax.legend(frameon=True, facecolor="white", edgecolor="#cbd5e1", loc="upper right")
+    _style_time_axis(ax)
+    fig.suptitle(
+        "Quan sát đồng thời tốc độ thay đổi giá và các cụm biến động mạnh",
+        y=0.98,
+        fontsize=10,
+        color="#475569",
+    )
+    save_current_figure("12_return_volatility_combined_chart.png")
+
     return saved_paths
 
 

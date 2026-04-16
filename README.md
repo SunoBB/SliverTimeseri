@@ -24,7 +24,7 @@ backend/
       features.py       # build_monthly_series, build_decomposition_report, lag/indicator
       models.py         # SES, Holt, HW×2, ARIMA(monthly) + ARX/MA/ARMA(daily)
       metrics.py        # MAE, RMSE, MAPE, ADF test, build_comparison_table
-      visualization.py  # 9 EDA charts + ACF/PACF + decomp + forecast comparison
+      visualization.py  # 12 EDA charts + ACF/PACF + decomp + forecast comparison
     providers/
       alpha_vantage.py  # Gọi API, parse JSON, cache local
     services/
@@ -154,13 +154,14 @@ PYTHONPATH=backend/src python3 -m silver_timeseri.cli academic \
 
 ---
 
-### Bước 4 — Sinh biểu đồ EDA (9 charts cơ bản)
+### Bước 4 — Sinh biểu đồ EDA (12 charts cơ bản)
 
 ```bash
 PYTHONPATH=backend/src python3 -m silver_timeseri.cli charts \
   --start-date 2011-01-01 --end-date 2026-04-12 \
   --output-dir outputs/charts \
   --ma-window 12 \
+  --volatility-window 30 \
   --aggregation-rule ME \
   --bins 20
 ```
@@ -178,6 +179,9 @@ Charts sinh ra trong `outputs/charts/`:
 | `07_time_dependency_autocorrelation_chart.png` | Autocorrelation |
 | `08_time_dependency_lag_relationship_chart.png` | Lag plot |
 | `09_analysis_summary_combo_chart.png` | Tổng hợp |
+| `10_return_log_return_chart.png` | Log return theo thời gian |
+| `11_return_rolling_volatility_chart.png` | Rolling volatility của log return |
+| `12_return_volatility_combined_chart.png` | Kết hợp log return và volatility |
 | `10_acf_pacf_chart.png` | ACF + PACF (từ lệnh `academic`) |
 | `11_decomposition_*_chart.png` | Phân rã cộng/nhân |
 | `13_forecast_comparison_chart.png` | 6 mô hình vs actual |

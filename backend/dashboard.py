@@ -14,15 +14,18 @@ from silver_timeseri.analysis.visualization import CHART_TITLES, save_time_serie
 API_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_CHARTS_OUTPUT_DIR = Path("outputs/charts")
 CLI_CHART_FILES = [
-    ("01_line_plot.png", CHART_TITLES["line"]),
-    ("02_moving_average.png", CHART_TITLES["moving_average"]),
-    ("03_aggregation.png", CHART_TITLES["aggregation"]),
-    ("04_boxplot.png", CHART_TITLES["boxplot"]),
-    ("05_histogram.png", CHART_TITLES["histogram"]),
-    ("06_density.png", CHART_TITLES["density"]),
-    ("07_autocorrelation.png", CHART_TITLES["autocorrelation"]),
-    ("08_lag_plot.png", CHART_TITLES["lag"]),
-    ("09_full_combo.png", CHART_TITLES["combo"]),
+    ("01_trend_overview_line_chart", CHART_TITLES["line"]),
+    ("02_trend_smoothing_moving_average_chart", CHART_TITLES["moving_average"]),
+    ("03_trend_zoom_aggregation_", CHART_TITLES["aggregation"]),
+    ("04_distribution_outlier_boxplot_chart", CHART_TITLES["boxplot"]),
+    ("05_distribution_frequency_histogram_chart", CHART_TITLES["histogram"]),
+    ("06_distribution_density_kde_chart", CHART_TITLES["density"]),
+    ("07_time_dependency_autocorrelation_chart", CHART_TITLES["autocorrelation"]),
+    ("08_time_dependency_lag_relationship_chart", CHART_TITLES["lag"]),
+    ("09_analysis_summary_combo_chart", CHART_TITLES["combo"]),
+    ("10_return_log_return_chart", CHART_TITLES["log_return"]),
+    ("11_return_rolling_volatility_chart", CHART_TITLES["volatility"]),
+    ("12_return_volatility_combined_chart", CHART_TITLES["return_volatility_combo"]),
 ]
 
 
@@ -83,13 +86,17 @@ def prepare_cli_chart_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_cli_chart_gallery(output_dir: Path) -> None:
-    existing_files = [(filename, title) for filename, title in CLI_CHART_FILES if (output_dir / filename).exists()]
+    existing_files: list[tuple[Path, str]] = []
+    for filename_prefix, title in CLI_CHART_FILES:
+        matches = sorted(output_dir.glob(f"{filename_prefix}*.png"))
+        if matches:
+            existing_files.append((matches[0], title))
+
     if not existing_files:
         st.info("Chua co anh chart CLI trong thu muc da chon.")
         return
 
-    for filename, title in existing_files:
-        image_path = output_dir / filename
+    for image_path, title in existing_files:
         st.markdown(f"**{title}**")
         st.caption(str(image_path))
         st.image(str(image_path), use_container_width=True)
@@ -108,6 +115,7 @@ def main() -> None:
             st.text_input("CLI charts output dir", value=str(DEFAULT_CHARTS_OUTPUT_DIR))
         )
         ma_window = st.number_input("MA window", min_value=2, value=7, step=1)
+        volatility_window = st.number_input("Volatility window", min_value=2, value=30, step=1)
         aggregation_rule = st.text_input("Aggregation rule", value="W")
         bins = st.number_input("Histogram bins", min_value=1, value=10, step=1)
         lag = st.number_input("Lag", min_value=1, value=1, step=1)
@@ -189,6 +197,7 @@ def main() -> None:
                 value_column="price_usd",
                 output_dir=charts_output_dir,
                 moving_average_window=int(ma_window),
+                volatility_window=int(volatility_window),
                 aggregation_rule=aggregation_rule,
                 histogram_bins=int(bins),
                 lag=int(lag),
