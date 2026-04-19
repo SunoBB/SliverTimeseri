@@ -72,20 +72,32 @@ export const REPORT_PAGES = [
     panelCopy: "Không chia cứng theo 1D, 1M hay 1Y. Thay vào đó, bạn nhìn toàn bộ chuỗi rồi tự zoom và kéo vùng đang quan tâm.",
   },
   {
+    id: "backtesting",
+    shortLabel: "Backtesting",
+    title: "06 — Model Backtesting",
+    subtitle: "Kiểm tra hiệu suất từng mô hình ARX · MA · ARMA trên tập test.",
+    kicker: "Backtesting Lab",
+    headline: "Model Backtesting",
+    description: "So sánh Actual vs Predicted trên tập kiểm tra, bảng xếp hạng MAE / RMSE / MAPE và hit rate hướng.",
+    panelLabel: "06 — Kiểm thử mô hình",
+    panelTitle: "Xem hiệu suất từng mô hình trên tập test.",
+    panelCopy: "Hiển thị chart Actual vs Predicted cho từng mô hình, bảng so sánh MAE / RMSE / MAPE và direction accuracy.",
+  },
+  {
     id: "forecast",
     shortLabel: "Forecast",
-    title: "06 — Model Forecast",
-    subtitle: "So sánh dự đoán ngày kế tiếp bằng ARX, MA và ARMA.",
+    title: "07 — Model Forecast",
+    subtitle: "Dự báo ngày kế tiếp bằng mô hình tốt nhất.",
     kicker: "Forecast Lab",
     headline: "Next-Day Forecast",
-    description: "So sánh nhanh dự báo ngày mai và sai số của các mô hình.",
-    panelLabel: "06 — Dự đoán",
-    panelTitle: "Xem nhanh mô hình nào đang dự đoán ổn hơn.",
-    panelCopy: "Ưu tiên model tốt nhất, giá dự báo ngày mai và sai số chính.",
+    description: "Dự báo ngày mai từ model đề xuất, consensus giá và khoảng tin cậy 95%.",
+    panelLabel: "07 — Dự đoán",
+    panelTitle: "Xem giá dự báo ngày mai từ mô hình tốt nhất.",
+    panelCopy: "Ưu tiên model tốt nhất, giá dự báo ngày mai, delta so với giá hiện tại và CI 95%.",
   },
 ];
 
 export const TABLE_PAGE_SIZE = 50;
 export const MODEL_AR_ORDER = 5;
 export const MODEL_MA_ORDER = 3;
-export const MODEL_TEST_SIZE = 30;
+export const MODEL_TEST_RATIO = 0.2;

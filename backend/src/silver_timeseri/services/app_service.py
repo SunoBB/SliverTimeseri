@@ -208,14 +208,14 @@ def get_model_forecasts(
     series_layer: str = CURATED_LAYER,
     ar_order: int = 5,
     ma_order: int = 3,
-    test_size: int = 20,
+    test_ratio: float = 0.2,
 ) -> dict[str, object]:
     if ar_order < 1:
         raise ValueError("ar_order must be >= 1.")
     if ma_order < 1:
         raise ValueError("ma_order must be >= 1.")
-    if test_size < 3:
-        raise ValueError("test_size must be >= 3.")
+    if not 0 < test_ratio < 1:
+        raise ValueError("test_ratio must be between 0 and 1.")
 
     repository = build_repository()
     frame = repository.fetch_history(
@@ -240,7 +240,7 @@ def get_model_forecasts(
         frame=dataset,
         ar_order=ar_order,
         ma_order=ma_order,
-        test_size=test_size,
+        test_ratio=test_ratio,
     )
 
     latest_row = dataset.iloc[-1]
@@ -280,6 +280,7 @@ def get_model_forecasts(
         "end_date": dataset.index.max().date().isoformat(),
         "timeframe": timeframe,
         "series_layer": series_layer,
+        "test_ratio": test_ratio,
         "forecast_context": {
             "latest_data_date": latest_data_date.isoformat(),
             "current_vn_date": today_vn.isoformat(),

@@ -84,7 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     model_parser.add_argument("--ar-order", type=int, default=5)
     model_parser.add_argument("--ma-order", type=int, default=3)
-    model_parser.add_argument("--test-size", type=int, default=20)
+    model_parser.add_argument("--test-ratio", type=float, default=0.2)
+    model_parser.add_argument("--output-json", type=Path, default=None)
 
     academic_parser = subparsers.add_parser(
         "academic",
@@ -161,15 +162,16 @@ def command_model(
     model_type: str,
     ar_order: int,
     ma_order: int,
-    test_size: int,
+    test_ratio: float,
+    output_json: Path | None,
     force_refresh: bool,
 ) -> int:
     if ar_order < 1:
         raise ValueError("ar-order must be >= 1.")
     if ma_order < 1:
         raise ValueError("ma-order must be >= 1.")
-    if test_size < 1:
-        raise ValueError("test-size must be >= 1.")
+    if not 0 < test_ratio < 1:
+        raise ValueError("test-ratio must be between 0 and 1.")
 
     pipeline = build_pipeline()
     frame = pipeline.load(
@@ -183,29 +185,29 @@ def command_model(
         raise ValueError("No data returned from provider.")
 
     if model_type == "ar":
-        results = [train_arx_model(frame=frame, ar_order=ar_order, test_size=test_size)]
+        results = [train_arx_model(frame=frame, ar_order=ar_order, test_ratio=test_ratio)]
     elif model_type == "ma":
-        results = [train_ma_model(frame=frame, ma_order=ma_order, test_size=test_size)]
+        results = [train_ma_model(frame=frame, ma_order=ma_order, test_ratio=test_ratio)]
     elif model_type == "arma":
         results = [
             train_arma_model(
                 frame=frame,
                 ar_order=ar_order,
                 ma_order=ma_order,
-                test_size=test_size,
+                test_ratio=test_ratio,
             )
         ]
     else:
         trainers = [
-            ("ARX", lambda: train_arx_model(frame=frame, ar_order=ar_order, test_size=test_size)),
-            ("MA", lambda: train_ma_model(frame=frame, ma_order=ma_order, test_size=test_size)),
+            ("ARX", lambda: train_arx_model(frame=frame, ar_order=ar_order, test_ratio=test_ratio)),
+            ("MA", lambda: train_ma_model(frame=frame, ma_order=ma_order, test_ratio=test_ratio)),
             (
                 "ARMA",
                 lambda: train_arma_model(
                     frame=frame,
                     ar_order=ar_order,
                     ma_order=ma_order,
-                    test_size=test_size,
+                    test_ratio=test_ratio,
                 ),
             ),
         ]
@@ -213,7 +215,12 @@ def command_model(
         for _, trainer in tqdm(trainers, desc="Training models", unit="model"):
             results.append(trainer())
 
-    print(json.dumps([result.to_dict() for result in results], indent=2))
+    payload = [result.to_dict() for result in results]
+    if output_json is not None:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"Saved model results to {output_json}")
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -461,7 +468,8 @@ def main() -> int:
                 model_type=args.model_type,
                 ar_order=args.ar_order,
                 ma_order=args.ma_order,
-                test_size=args.test_size,
+                test_ratio=args.test_ratio,
+                output_json=args.output_json,
                 force_refresh=args.force_refresh,
             )
         if args.command == "academic":

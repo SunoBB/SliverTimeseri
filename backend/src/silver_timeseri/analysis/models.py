@@ -22,6 +22,7 @@ class ModelRunResult:
     predictions: list[dict[str, Any]]
     direction_backtest: dict[str, Any] | None = None
     next_forecast: dict[str, Any] | None = None
+    multi_forecast: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,12 +34,16 @@ class ModelRunResult:
             "predictions": self.predictions,
             "direction_backtest": self.direction_backtest,
             "next_forecast": self.next_forecast,
+            "multi_forecast": self.multi_forecast,
         }
 
 
-def split_train_test(frame: pd.DataFrame, test_size: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def split_train_test(frame: pd.DataFrame, test_ratio: float = 0.2) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not 0 < test_ratio < 1:
+        raise ValueError("test_ratio must be between 0 and 1.")
+    test_size = max(1, int(len(frame) * test_ratio))
     if len(frame) <= test_size:
-        raise ValueError("Dataset is too small for the requested test_size.")
+        raise ValueError("Dataset is too small for the requested test_ratio.")
     train = frame.iloc[:-test_size].copy()
     test = frame.iloc[-test_size:].copy()
     return train, test
@@ -61,7 +66,7 @@ def evaluate_predictions(actual: pd.Series, predicted: pd.Series) -> dict[str, f
 def train_arx_model(
     frame: pd.DataFrame,
     ar_order: int,
-    test_size: int,
+    test_ratio: float = 0.2,
     indicator_columns: list[str] | None = None,
 ) -> ModelRunResult:
     indicators = indicator_columns or DEFAULT_INDICATORS
@@ -72,7 +77,7 @@ def train_arx_model(
     dataset = dataset.dropna(subset=feature_columns + ["price_usd"])
     if dataset.empty:
         raise ValueError("Not enough rows to train ARX after creating indicators and lags.")
-    train, test = split_train_test(dataset, test_size=test_size)
+    train, test = split_train_test(dataset, test_ratio=test_ratio)
 
     x_train = train[feature_columns].to_numpy(dtype=float)
     y_train = train["price_usd"].to_numpy(dtype=float)
@@ -82,7 +87,12 @@ def train_arx_model(
     x_test_design = np.column_stack([np.ones(len(x_test)), x_test])
 
     coefficients, _, _, _ = np.linalg.lstsq(x_train_design, y_train, rcond=None)
+    train_residuals = pd.Series(y_train - (x_train_design @ coefficients))
     predictions = pd.Series(x_test_design @ coefficients, index=test.index, name="predicted")
+    lower_bounds, upper_bounds = _build_prediction_interval_series(
+        predictions,
+        train_residuals,
+    )
     metrics = evaluate_predictions(test["price_usd"], predictions)
 
     coefficient_map = {"intercept": round(float(coefficients[0]), 6)}
@@ -94,6 +104,7 @@ def train_arx_model(
         ar_order=ar_order,
         indicator_columns=indicators,
     )
+    multi_forecast = forecast_multi_arx(frame=frame, ar_order=ar_order, n_days=30, indicator_columns=indicators)
 
     return ModelRunResult(
         model_name="ARX",
@@ -104,26 +115,35 @@ def train_arx_model(
             "ar_order": ar_order,
             "indicators": indicators,
             "coefficients": coefficient_map,
+            "residual_std": round(float(train_residuals.std(ddof=1)), 6),
         },
-        predictions=_format_predictions(test["price_usd"], predictions),
+        predictions=_format_predictions(
+            test["price_usd"],
+            predictions,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
+        ),
         direction_backtest=_summarize_direction_backtest(frame, test["price_usd"], predictions),
         next_forecast=next_forecast,
+        multi_forecast=multi_forecast,
     )
 
 
-def train_ma_model(frame: pd.DataFrame, ma_order: int, test_size: int) -> ModelRunResult:
+def train_ma_model(frame: pd.DataFrame, ma_order: int, test_ratio: float = 0.2) -> ModelRunResult:
     dataset = frame[["price_usd"]].dropna()
-    if len(dataset) <= ma_order + test_size:
-        raise ValueError("Not enough rows to train MA with the requested order and test_size.")
-    train, test = split_train_test(dataset, test_size=test_size)
+    train, test = split_train_test(dataset, test_ratio=test_ratio)
+    if len(train) <= ma_order:
+        raise ValueError("Not enough rows to train MA with the requested order and test_ratio.")
     train_series = train["price_usd"].reset_index(drop=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=UserWarning)
         warnings.simplefilter("ignore", category=ConvergenceWarning)
         fitted = ARIMA(train_series, order=(0, 0, ma_order)).fit()
-    predictions = fitted.forecast(steps=len(test))
-    predictions.index = test.index
+    forecast_result = fitted.get_forecast(steps=len(test))
+    predictions = pd.Series(forecast_result.predicted_mean.values, index=test.index, name="predicted")
+    conf_int = forecast_result.conf_int(alpha=0.05)
     next_forecast = forecast_next_day_ma(frame=frame, ma_order=ma_order)
+    multi_forecast = forecast_multi_ma(frame=frame, ma_order=ma_order, n_days=30)
 
     return ModelRunResult(
         model_name="MA",
@@ -136,9 +156,15 @@ def train_ma_model(frame: pd.DataFrame, ma_order: int, test_size: int) -> ModelR
             "bic": round(float(fitted.bic), 6),
             "params": _round_mapping(fitted.params.to_dict()),
         },
-        predictions=_format_predictions(test["price_usd"], predictions),
+        predictions=_format_predictions(
+            test["price_usd"],
+            predictions,
+            lower_bounds=pd.Series(conf_int.iloc[:, 0].values, index=test.index),
+            upper_bounds=pd.Series(conf_int.iloc[:, 1].values, index=test.index),
+        ),
         direction_backtest=_summarize_direction_backtest(frame, test["price_usd"], predictions),
         next_forecast=next_forecast,
+        multi_forecast=multi_forecast,
     )
 
 
@@ -146,20 +172,22 @@ def train_arma_model(
     frame: pd.DataFrame,
     ar_order: int,
     ma_order: int,
-    test_size: int,
+    test_ratio: float = 0.2,
 ) -> ModelRunResult:
     dataset = frame[["price_usd"]].dropna()
-    if len(dataset) <= ar_order + ma_order + test_size:
-        raise ValueError("Not enough rows to train ARMA with the requested orders and test_size.")
-    train, test = split_train_test(dataset, test_size=test_size)
+    train, test = split_train_test(dataset, test_ratio=test_ratio)
+    if len(train) <= ar_order + ma_order:
+        raise ValueError("Not enough rows to train ARMA with the requested orders and test_ratio.")
     train_series = train["price_usd"].reset_index(drop=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=UserWarning)
         warnings.simplefilter("ignore", category=ConvergenceWarning)
         fitted = ARIMA(train_series, order=(ar_order, 0, ma_order)).fit()
-    predictions = fitted.forecast(steps=len(test))
-    predictions.index = test.index
+    forecast_result = fitted.get_forecast(steps=len(test))
+    predictions = pd.Series(forecast_result.predicted_mean.values, index=test.index, name="predicted")
+    conf_int = forecast_result.conf_int(alpha=0.05)
     next_forecast = forecast_next_day_arma(frame=frame, ar_order=ar_order, ma_order=ma_order)
+    multi_forecast = forecast_multi_arma(frame=frame, ar_order=ar_order, ma_order=ma_order, n_days=30)
 
     return ModelRunResult(
         model_name="ARMA",
@@ -173,26 +201,147 @@ def train_arma_model(
             "bic": round(float(fitted.bic), 6),
             "params": _round_mapping(fitted.params.to_dict()),
         },
-        predictions=_format_predictions(test["price_usd"], predictions),
+        predictions=_format_predictions(
+            test["price_usd"],
+            predictions,
+            lower_bounds=pd.Series(conf_int.iloc[:, 0].values, index=test.index),
+            upper_bounds=pd.Series(conf_int.iloc[:, 1].values, index=test.index),
+        ),
         direction_backtest=_summarize_direction_backtest(frame, test["price_usd"], predictions),
         next_forecast=next_forecast,
+        multi_forecast=multi_forecast,
     )
+
+
+def forecast_multi_arx(
+    frame: pd.DataFrame,
+    ar_order: int,
+    n_days: int = 30,
+    indicator_columns: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Iterative multi-step forecast for ARX: predicted values are fed back as lags."""
+    indicators = indicator_columns or DEFAULT_INDICATORS
+    dataset = add_technical_indicators(frame)
+    dataset = add_lag_features(dataset, order=ar_order, column="price_usd")
+    feature_columns = [f"price_usd_lag_{lag}" for lag in range(1, ar_order + 1)] + indicators
+    clean = dataset.dropna(subset=feature_columns + ["price_usd"])
+    if clean.empty:
+        raise ValueError("Not enough data for multi-day ARX forecast.")
+
+    x_all = clean[feature_columns].to_numpy(dtype=float)
+    y_all = clean["price_usd"].to_numpy(dtype=float)
+    x_design = np.column_stack([np.ones(len(x_all)), x_all])
+    coefficients, _, _, _ = np.linalg.lstsq(x_design, y_all, rcond=None)
+    train_residuals = pd.Series(y_all - (x_design @ coefficients))
+
+    price_buffer = list(frame["price_usd"].astype(float).dropna().values)
+    base_date = frame.index.max()
+    results: list[dict[str, Any]] = []
+
+    for step in range(n_days):
+        prices_arr = pd.Series(price_buffer, dtype=float)
+        returns = prices_arr.pct_change()
+
+        ind_values: dict[str, float] = {}
+        for ind in indicators:
+            if ind == "return_1d":
+                ind_values[ind] = float(returns.iloc[-1]) if len(returns) > 1 else 0.0
+            elif ind == "ma_5":
+                ind_values[ind] = float(prices_arr.tail(5).mean())
+            elif ind == "ma_10":
+                ind_values[ind] = float(prices_arr.tail(10).mean())
+            elif ind == "ma_20":
+                ind_values[ind] = float(prices_arr.tail(20).mean())
+            elif ind == "volatility_5":
+                ind_values[ind] = float(returns.tail(5).std()) if len(returns) >= 5 else 0.0
+            elif ind == "volatility_10":
+                ind_values[ind] = float(returns.tail(10).std()) if len(returns) >= 10 else 0.0
+            elif ind == "momentum_5":
+                ind_values[ind] = float(prices_arr.iloc[-1] - prices_arr.iloc[-6]) if len(prices_arr) >= 6 else 0.0
+            else:
+                ind_values[ind] = 0.0
+
+        lag_vals = [price_buffer[-(lag)] for lag in range(1, ar_order + 1)]
+        feature_vector = lag_vals + [ind_values.get(ind, 0.0) for ind in indicators]
+        x_future = np.array([1.0] + feature_vector, dtype=float)
+        predicted = float(x_future @ coefficients)
+        next_date = (base_date + pd.Timedelta(days=step + 1)).date().isoformat()
+        lower, upper = _build_prediction_interval_values(predicted, train_residuals)
+        results.append({
+            "date": next_date,
+            "predicted": round(predicted, 6),
+            **_format_interval_fields(lower, upper),
+        })
+        price_buffer.append(predicted)
+
+    return results
+
+
+def forecast_multi_ma(frame: pd.DataFrame, ma_order: int, n_days: int = 30) -> list[dict[str, Any]]:
+    """Multi-step MA forecast — uses I(1) differencing to preserve trend (avoids flat-line mean reversion)."""
+    dataset = frame[["price_usd"]].dropna()
+    if len(dataset) <= ma_order + 2:
+        raise ValueError("Not enough data for multi-day MA forecast.")
+    price_series = dataset["price_usd"].reset_index(drop=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        fitted = ARIMA(price_series, order=(0, 1, ma_order)).fit()
+    fc = fitted.get_forecast(steps=n_days)
+    ci = fc.conf_int(alpha=0.05)
+    base_date = dataset.index.max()
+    return [
+        {
+            "date": (base_date + pd.Timedelta(days=i + 1)).date().isoformat(),
+            "predicted": round(float(fc.predicted_mean.iloc[i]), 6),
+            **_format_interval_fields(float(ci.iloc[i, 0]), float(ci.iloc[i, 1])),
+        }
+        for i in range(n_days)
+    ]
+
+
+def forecast_multi_arma(
+    frame: pd.DataFrame,
+    ar_order: int,
+    ma_order: int,
+    n_days: int = 30,
+) -> list[dict[str, Any]]:
+    """Multi-step ARMA forecast — uses I(1) differencing to preserve trend (avoids flat-line mean reversion)."""
+    dataset = frame[["price_usd"]].dropna()
+    if len(dataset) <= ar_order + ma_order + 2:
+        raise ValueError("Not enough data for multi-day ARMA forecast.")
+    price_series = dataset["price_usd"].reset_index(drop=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=UserWarning)
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        fitted = ARIMA(price_series, order=(ar_order, 1, ma_order)).fit()
+    fc = fitted.get_forecast(steps=n_days)
+    ci = fc.conf_int(alpha=0.05)
+    base_date = dataset.index.max()
+    return [
+        {
+            "date": (base_date + pd.Timedelta(days=i + 1)).date().isoformat(),
+            "predicted": round(float(fc.predicted_mean.iloc[i]), 6),
+            **_format_interval_fields(float(ci.iloc[i, 0]), float(ci.iloc[i, 1])),
+        }
+        for i in range(n_days)
+    ]
 
 
 def run_model_suite(
     frame: pd.DataFrame,
     ar_order: int,
     ma_order: int,
-    test_size: int,
+    test_ratio: float = 0.2,
 ) -> list[ModelRunResult]:
     return [
-        train_arx_model(frame=frame, ar_order=ar_order, test_size=test_size),
-        train_ma_model(frame=frame, ma_order=ma_order, test_size=test_size),
+        train_arx_model(frame=frame, ar_order=ar_order, test_ratio=test_ratio),
+        train_ma_model(frame=frame, ma_order=ma_order, test_ratio=test_ratio),
         train_arma_model(
             frame=frame,
             ar_order=ar_order,
             ma_order=ma_order,
-            test_size=test_size,
+            test_ratio=test_ratio,
         ),
     ]
 
@@ -214,15 +363,18 @@ def forecast_next_day_arx(
     y_train = dataset["price_usd"].to_numpy(dtype=float)
     x_train_design = np.column_stack([np.ones(len(x_train)), x_train])
     coefficients, _, _, _ = np.linalg.lstsq(x_train_design, y_train, rcond=None)
+    train_residuals = pd.Series(y_train - (x_train_design @ coefficients))
 
     future_row = _build_next_day_arx_features(frame=frame, ar_order=ar_order, indicators=indicators)
     x_future = np.array([1.0] + [float(future_row[column]) for column in feature_columns], dtype=float)
     predicted = float(x_future @ coefficients)
     next_date = (frame.index.max() + pd.Timedelta(days=1)).date().isoformat()
+    lower_bound, upper_bound = _build_prediction_interval_values(predicted, train_residuals)
 
     return {
         "date": next_date,
         "predicted": round(predicted, 6),
+        **_format_interval_fields(lower_bound, upper_bound),
         "predicted_direction": _direction_label(predicted - float(frame["price_usd"].iloc[-1])),
     }
 
@@ -242,8 +394,7 @@ def forecast_next_day_ma(frame: pd.DataFrame, ma_order: int) -> dict[str, Any]:
     return {
         "date": next_date,
         "predicted": round(float(forecast_result.predicted_mean.iloc[0]), 6),
-        "lower_95": round(float(conf_int.iloc[0, 0]), 6),
-        "upper_95": round(float(conf_int.iloc[0, 1]), 6),
+        **_format_interval_fields(float(conf_int.iloc[0, 0]), float(conf_int.iloc[0, 1])),
         "predicted_direction": _direction_label(
             float(forecast_result.predicted_mean.iloc[0]) - float(dataset["price_usd"].iloc[-1])
         ),
@@ -265,8 +416,7 @@ def forecast_next_day_arma(frame: pd.DataFrame, ar_order: int, ma_order: int) ->
     return {
         "date": next_date,
         "predicted": round(float(forecast_result.predicted_mean.iloc[0]), 6),
-        "lower_95": round(float(conf_int.iloc[0, 0]), 6),
-        "upper_95": round(float(conf_int.iloc[0, 1]), 6),
+        **_format_interval_fields(float(conf_int.iloc[0, 0]), float(conf_int.iloc[0, 1])),
         "predicted_direction": _direction_label(
             float(forecast_result.predicted_mean.iloc[0]) - float(dataset["price_usd"].iloc[-1])
         ),
@@ -306,19 +456,65 @@ def _build_next_day_arx_features(
     return values
 
 
-def _format_predictions(actual: pd.Series, predicted: pd.Series) -> list[dict[str, Any]]:
+def _format_predictions(
+    actual: pd.Series,
+    predicted: pd.Series,
+    lower_bounds: pd.Series | None = None,
+    upper_bounds: pd.Series | None = None,
+) -> list[dict[str, Any]]:
     rows = []
     for index, actual_value in actual.items():
         predicted_value = predicted.loc[index]
-        rows.append(
-            {
-                "date": index.date().isoformat(),
-                "actual": round(float(actual_value), 6),
-                "predicted": round(float(predicted_value), 6),
-                "error": round(float(actual_value - predicted_value), 6),
-            }
-        )
+        row = {
+            "date": index.date().isoformat(),
+            "actual": round(float(actual_value), 6),
+            "predicted": round(float(predicted_value), 6),
+            "error": round(float(actual_value - predicted_value), 6),
+        }
+        if lower_bounds is not None and upper_bounds is not None:
+            row.update(
+                _format_interval_fields(
+                    float(lower_bounds.loc[index]),
+                    float(upper_bounds.loc[index]),
+                )
+            )
+        rows.append(row)
     return rows
+
+
+def _build_prediction_interval_series(
+    predicted: pd.Series,
+    residuals: pd.Series,
+    z_score: float = 1.96,
+) -> tuple[pd.Series, pd.Series]:
+    residual_std = float(pd.Series(residuals).dropna().std(ddof=1))
+    if not np.isfinite(residual_std) or residual_std <= 0:
+        residual_std = 0.0
+    margin = z_score * residual_std
+    return predicted - margin, predicted + margin
+
+
+def _build_prediction_interval_values(
+    predicted: float,
+    residuals: pd.Series,
+    z_score: float = 1.96,
+) -> tuple[float, float]:
+    predicted_series = pd.Series([predicted], index=[0], dtype=float)
+    lower_bounds, upper_bounds = _build_prediction_interval_series(predicted_series, residuals, z_score=z_score)
+    return float(lower_bounds.iloc[0]), float(upper_bounds.iloc[0])
+
+
+def _format_interval_fields(lower_bound: float, upper_bound: float) -> dict[str, float]:
+    rounded_lower = round(float(lower_bound), 6)
+    rounded_upper = round(float(upper_bound), 6)
+    return {
+        "lower_bound": rounded_lower,
+        "upper_bound": rounded_upper,
+        "lower_95": rounded_lower,
+        "upper_95": rounded_upper,
+        "band_width": round(rounded_upper - rounded_lower, 6),
+        "interval_level": 0.95,
+    }
 
 
 def _summarize_direction_backtest(

@@ -6,6 +6,7 @@ Tài liệu chuyên sâu theo từng mảng:
 - FastAPI endpoints & scheduler: [docs/agents/backend-api.md](docs/agents/backend-api.md)
 - Feature engineering & mô hình: [docs/agents/analysis.md](docs/agents/analysis.md)
 - React frontend: [docs/agents/frontend.md](docs/agents/frontend.md)
+- Hướng dẫn dùng mô hình, input/output, kiểm thử FE/BE: [docs/model_usage_and_testing.md](docs/model_usage_and_testing.md)
 
 ---
 

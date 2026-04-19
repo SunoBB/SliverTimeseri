@@ -139,7 +139,7 @@ def silver_models(
     series_layer: str = Query(default="curated", pattern=SERIES_LAYER_PATTERN),
     ar_order: int = Query(default=5, ge=1, le=20),
     ma_order: int = Query(default=3, ge=1, le=20),
-    test_size: int = Query(default=20, ge=3, le=180),
+    test_ratio: float = Query(default=0.2, gt=0.0, lt=1.0),
 ) -> dict[str, object]:
     try:
         return get_model_forecasts(
@@ -149,7 +149,7 @@ def silver_models(
             series_layer=series_layer,
             ar_order=ar_order,
             ma_order=ma_order,
-            test_size=test_size,
+            test_ratio=test_ratio,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

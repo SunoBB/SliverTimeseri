@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   MODEL_AR_ORDER,
   MODEL_MA_ORDER,
-  MODEL_TEST_SIZE,
+  MODEL_TEST_RATIO,
   REPORT_PAGES,
   TABLE_PAGE_SIZE,
 } from "./constants/reportPages";
@@ -22,7 +22,11 @@ import { TechnicalAnalysisSuite } from "./components/analytics";
 import {
   ForecastChart,
   ForecastContextNote,
+  ForecastEvaluationPanel,
   ForecastHero,
+  ForecastHorizonSelector,
+  ForecastMultiDayChart,
+  ForecastRadarChart,
   ForecastReportTable,
 } from "./components/forecast";
 import { requestJson } from "./lib/api";
@@ -61,6 +65,7 @@ export default function App() {
   const [pageIndex, setPageIndex] = useState(initial.pageIndex);
   const [forecastDirty, setForecastDirty] = useState(true);
   const [forecastRequested, setForecastRequested] = useState(false);
+  const [forecastHorizon, setForecastHorizon] = useState(1);
   const [jumpInput, setJumpInput] = useState("");
 
   const params = useMemo(
@@ -151,7 +156,7 @@ export default function App() {
         ...params,
         ar_order: MODEL_AR_ORDER,
         ma_order: MODEL_MA_ORDER,
-        test_size: MODEL_TEST_SIZE,
+        test_ratio: MODEL_TEST_RATIO,
       });
       setModelSuite(res);
       setForecastDirty(false);
@@ -186,6 +191,8 @@ export default function App() {
     setTablePage(1);
     setForecastDirty(true);
   }, [startDate, endDate]);
+
+  useEffect(() => { setForecastDirty(true); }, [forecastHorizon]);
 
   useEffect(() => {
     if (pageIndex === 4) loadTablePage(tablePage);
@@ -556,7 +563,7 @@ export default function App() {
           )}
         </section>
 
-        {/* 06 — Forecast */}
+        {/* 06 — Backtesting */}
         <section className={`page-section${pageIndex === 6 ? " active" : ""}`}>
           <div className="page-header">
             <h1 className="page-title">{currentPage.headline}</h1>
@@ -580,24 +587,80 @@ export default function App() {
 
           {forecastLoading ? (
             <div className="chart-card">
-              <div className="chart-note">Đang huấn luyện và đọc forecast từ backend…</div>
+              <div className="chart-note">Đang huấn luyện mô hình…</div>
             </div>
           ) : models.length ? (
             <>
-              <ForecastContextNote forecastContext={forecastContext} />
-              <ForecastHero
-                models={models}
-                latestActual={modelSuite?.latest_actual}
-                forecastContext={forecastContext}
-                rankings={modelRankings}
-              />
-              <ForecastChart model={bestModel} />
+              <ForecastEvaluationPanel models={models} rankings={modelRankings} />
+              {models.map((m) => (
+                <ForecastChart key={m.model_name} model={m} />
+              ))}
               <ForecastReportTable
                 models={models}
                 latestActual={modelSuite?.latest_actual}
                 forecastContext={forecastContext}
                 rankings={modelRankings}
               />
+            </>
+          ) : (
+            <EmptyState
+              title={forecastRequested ? "Backtesting chưa sẵn sàng" : "Chưa chạy phân tích"}
+              text={
+                forecastRequested
+                  ? "Cần đủ dữ liệu để train. Nới khoảng ngày hoặc sync thêm rồi thử lại."
+                  : "Bấm Phân tích để backend chạy mô hình và hiển thị kết quả kiểm thử."
+              }
+            />
+          )}
+        </section>
+
+        {/* 07 — Forecast */}
+        <section className={`page-section${pageIndex === 7 ? " active" : ""}`}>
+          <div className="page-header">
+            <h1 className="page-title">{currentPage.headline}</h1>
+            <p className="page-desc">{currentPage.description}</p>
+          </div>
+
+          <div className="chart-card forecast-toolbar-card">
+            <div>
+              <div className="card-title">Dự báo ngày kế tiếp</div>
+              <div className="card-sub">Chọn horizon rồi bấm Phân tích — backend tính đủ 30 ngày, FE slice theo lựa chọn.</div>
+            </div>
+            <div className="forecast-toolbar-actions">
+              <ForecastHorizonSelector horizon={forecastHorizon} onChange={setForecastHorizon} />
+              <span className={`pill ${forecastDirty ? "pill-warn" : "pill-ok"}`}>
+                {forecastDirty ? "cần chạy lại" : "đã cập nhật"}
+              </span>
+              <button className="btn-primary" onClick={loadForecast} disabled={forecastLoading}>
+                {forecastLoading ? "Đang phân tích…" : "Phân tích"}
+              </button>
+            </div>
+          </div>
+
+          {forecastLoading ? (
+            <div className="chart-card">
+              <div className="chart-note">Đang tính forecast từ backend…</div>
+            </div>
+          ) : models.length ? (
+            <>
+              <ForecastContextNote forecastContext={forecastContext} />
+              {forecastHorizon === 1 ? (
+                <ForecastHero
+                  models={models}
+                  latestActual={modelSuite?.latest_actual}
+                  forecastContext={forecastContext}
+                  rankings={modelRankings}
+                />
+              ) : (
+                <div className="fc-multiday-layout">
+                  <ForecastMultiDayChart
+                    models={models}
+                    latestActual={modelSuite?.latest_actual}
+                    horizon={forecastHorizon}
+                  />
+                  <ForecastRadarChart models={models} />
+                </div>
+              )}
             </>
           ) : (
             <EmptyState
